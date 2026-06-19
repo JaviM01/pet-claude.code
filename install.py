@@ -87,6 +87,20 @@ def main():
     print("  PostToolUse  -> dismiss notification overlay automatically")
     print("\nRestart Claude Code (or run /hooks) to activate.")
 
+    system = platform.system()
+    if system == "Darwin":
+        print("\nmacOS notes:")
+        print("  - If the window doesn't appear, grant Accessibility permission to")
+        print("    Terminal (or your Claude Code app) in:")
+        print("    System Settings > Privacy & Security > Accessibility")
+        print("  - If tkinter is missing (Homebrew Python), run:")
+        print("    brew install python-tk")
+    elif system == "Linux":
+        print("\nLinux notes:")
+        print("  - If tkinter is missing, install it with:")
+        print("    sudo apt install python3-tk   # Debian/Ubuntu")
+        print("    sudo dnf install python3-tkinter  # Fedora")
+
 
 if __name__ == "__main__":
     main()
