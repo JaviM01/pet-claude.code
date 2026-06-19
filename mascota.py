@@ -5,8 +5,14 @@ Claude Code Mascot - animated overlay triggered by Claude Code hooks.
 Shows a borderless, always-on-top window in the bottom-right corner with
 an animated GIF (or emoji fallback).
 
-- notification: stays visible (breathing pulse) until clicked or ESC
-- stop:         auto-closes after a few seconds
+Behaviour by event:
+  notification  - stays visible (breathing pulse) until dismissed
+  stop          - auto-closes after a few seconds
+  dismiss       - silently closes any open notification overlay (no window)
+
+Dismiss mechanism: notification creates a lock file; any subsequent event
+(PostToolUse, Stop, or a new Notification) deletes it. The overlay polls
+the lock file every 300 ms and fades out when it disappears.
 
 Usage:
     python mascota.py <event> ["optional message"]
@@ -25,17 +31,17 @@ import tkinter as tk
 SISTEMA = platform.system()  # 'Windows', 'Darwin', 'Linux'
 
 if SISTEMA == "Windows":
-    BG_CANVAS = "#ff00ff"          # magenta -> transparent via -transparentcolor
+    BG_CANVAS = "#ff00ff"
     FUENTE_EMOJI = ("Segoe UI Emoji", 38)
     FUENTE_UI_BOLD = ("Segoe UI", 13, "bold")
     FUENTE_UI = ("Segoe UI", 10)
-    OFFSET_Y = 64                  # taskbar height
+    OFFSET_Y = 64
 elif SISTEMA == "Darwin":
-    BG_CANVAS = "#1a1a2e"          # dark bg (no per-pixel transparency on macOS)
+    BG_CANVAS = "#1a1a2e"
     FUENTE_EMOJI = ("Apple Color Emoji", 38)
     FUENTE_UI_BOLD = ("Helvetica Neue", 13, "bold")
     FUENTE_UI = ("Helvetica Neue", 10)
-    OFFSET_Y = 80                  # dock height
+    OFFSET_Y = 80
 else:
     BG_CANVAS = "#1a1a2e"
     FUENTE_EMOJI = ("Noto Color Emoji", 38)
@@ -44,8 +50,25 @@ else:
     OFFSET_Y = 64
 
 # ---------------------------------------------------------------------------
-# GIF paths — relative to this script so the repo is self-contained.
-# Put your GIFs in the gifs/ folder next to mascota.py.
+# Lock file — used to signal the notification overlay to close
+# ---------------------------------------------------------------------------
+LOCK_FILE = os.path.join(os.path.expanduser("~"), ".claude", "mascota", "notification.lock")
+
+
+def crear_lock():
+    os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
+    open(LOCK_FILE, "w").close()
+
+
+def borrar_lock():
+    try:
+        os.remove(LOCK_FILE)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# GIF paths — relative to this script
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -56,7 +79,7 @@ EVENTOS = {
         "titulo": "Claude needs you",
         "mensaje": "May I continue?",
         "color": "#2563eb",
-        "auto_cerrar": False,   # stays until the user clicks or presses ESC
+        "auto_cerrar": False,
     },
     "stop": {
         "gif": os.path.join(SCRIPT_DIR, "gifs", "stop.gif"),
@@ -109,13 +132,21 @@ def cargar_gif(path):
     return frames
 
 
+def _watch_sentinel(root, cerrar):
+    """Poll every 300 ms — if lock file is gone, close the overlay."""
+    if not os.path.exists(LOCK_FILE):
+        cerrar()
+        return
+    try:
+        root.after(300, lambda: _watch_sentinel(root, cerrar))
+    except tk.TclError:
+        pass
+
+
 def _ciclo_alpha(root, cfg, on_tick=None):
     """
-    State machine for window alpha:
-      'fade_in' -> 'pulse' (if auto_cerrar=False) or 'idle' -> 'fade_out'
-
-    Returns a cerrar() callable that triggers fade_out from any event
-    (click, ESC, or auto-close timer).
+    State machine: fade_in -> pulse (persistent) or idle (auto-close) -> fade_out
+    Returns cerrar(), a callable that triggers the fade_out from any source.
     """
     auto_cerrar = cfg.get("auto_cerrar", True)
     estado = {"fase": "fade_in", "alpha": 0.0, "t": 0}
@@ -127,7 +158,6 @@ def _ciclo_alpha(root, cfg, on_tick=None):
     def ciclo():
         try:
             fase = estado["fase"]
-
             if fase == "fade_in":
                 estado["alpha"] = min(0.99, estado["alpha"] + 0.08)
                 root.attributes("-alpha", estado["alpha"])
@@ -135,13 +165,12 @@ def _ciclo_alpha(root, cfg, on_tick=None):
                     estado["fase"] = "idle" if auto_cerrar else "pulse"
 
             elif fase == "pulse":
-                # Breathing effect to signal the overlay is waiting for the user
                 estado["t"] += 1
                 a = 0.82 + 0.17 * math.sin(estado["t"] / 18.0)
                 root.attributes("-alpha", a)
 
             elif fase == "idle":
-                pass  # fully visible, auto-close timer will call cerrar()
+                pass
 
             elif fase == "fade_out":
                 estado["alpha"] = float(root.attributes("-alpha"))
@@ -169,9 +198,10 @@ def _ciclo_alpha(root, cfg, on_tick=None):
 
 
 def mostrar_gif(root, cfg):
+    """Returns cerrar callable, or None if GIF could not be loaded."""
     frames = cargar_gif(cfg["gif"]) if cfg.get("gif") else []
     if not frames:
-        return False
+        return None
 
     w, h = frames[0].width(), frames[0].height()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -180,7 +210,7 @@ def mostrar_gif(root, cfg):
 
     canvas = tk.Canvas(root, width=w, height=h, bg=BG_CANVAS, highlightthickness=0)
     canvas.pack()
-    canvas._frames = frames  # keep reference alive
+    canvas._frames = frames
     img_id = canvas.create_image(w // 2, h // 2, image=frames[0])
 
     frame_idx = [0]
@@ -198,10 +228,11 @@ def mostrar_gif(root, cfg):
     cerrar = _ciclo_alpha(root, cfg)
     canvas.bind("<Button-1>", cerrar)
     root.bind("<Escape>", cerrar)
-    return True
+    return cerrar
 
 
 def mostrar_emoji(root, cfg, mensaje):
+    """Always succeeds; returns cerrar callable."""
     ANCHO, ALTO = 300, 120
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     x, y = sw - ANCHO - 24, sh - ALTO - OFFSET_Y
@@ -237,10 +268,19 @@ def mostrar_emoji(root, cfg, mensaje):
     cerrar = _ciclo_alpha(root, cfg, on_tick=on_tick)
     canvas.bind("<Button-1>", cerrar)
     root.bind("<Escape>", cerrar)
+    return cerrar
 
 
 def main():
     evento = sys.argv[1] if len(sys.argv) > 1 else "_default"
+
+    # Every event (except notification itself) dismisses any open notification overlay.
+    # 'dismiss' is a no-window command used by the PostToolUse hook.
+    if evento != "notification":
+        borrar_lock()
+    if evento == "dismiss":
+        sys.exit(0)
+
     cfg = EVENTOS.get(evento, EVENTOS["_default"])
 
     payload = leer_payload()
@@ -258,15 +298,19 @@ def main():
     root.attributes("-alpha", 0.0)
     root.configure(bg=BG_CANVAS)
 
-    # Per-pixel transparency: only works on Windows
     if SISTEMA == "Windows":
         try:
             root.attributes("-transparentcolor", BG_CANVAS)
         except tk.TclError:
             pass
 
-    if not mostrar_gif(root, cfg):
-        mostrar_emoji(root, cfg, mensaje)
+    cerrar = mostrar_gif(root, cfg) or mostrar_emoji(root, cfg, mensaje)
+
+    if not cfg.get("auto_cerrar", True):
+        crear_lock()
+        # Delete lock when overlay closes for any reason (click, ESC, or sentinel)
+        root.bind("<Destroy>", lambda e: borrar_lock())
+        _watch_sentinel(root, cerrar)
 
     root.mainloop()
 

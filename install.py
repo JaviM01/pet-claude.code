@@ -2,7 +2,7 @@
 """
 Installer for Claude Code Mascot.
 
-Adds Notification and Stop hooks to ~/.claude/settings.json
+Adds Notification, Stop, and PostToolUse hooks to ~/.claude/settings.json
 pointing to mascota.py in this directory.
 
 Usage:
@@ -29,20 +29,15 @@ def find_pythonw():
     return sys.executable
 
 
-def build_commands(python: str, script: pathlib.Path):
-    """Returns (notification_cmd, stop_cmd) for the current OS."""
+def build_command(python: str, script: pathlib.Path, event: str) -> str:
+    """Returns the hook command string for the given event."""
     p = str(python).replace("\\", "\\\\")
     s = str(script).replace("\\", "\\\\")
 
     if platform.system() == "Windows":
-        notification = f'start "" "{p}" "{s}" notification'
-        stop = f'start "" "{p}" "{s}" stop'
+        return f'start "" "{p}" "{s}" {event}'
     else:
-        # & runs the process in background so the hook doesn't block Claude
-        notification = f'"{python}" "{script}" notification &'
-        stop = f'"{python}" "{script}" stop &'
-
-    return notification, stop
+        return f'"{python}" "{script}" {event} &'
 
 
 def main():
@@ -58,7 +53,6 @@ def main():
     print(f"Script  : {script}")
     print(f"Settings: {settings_path}")
 
-    # Load existing settings or start fresh
     settings = {}
     if settings_path.exists():
         try:
@@ -67,22 +61,31 @@ def main():
         except json.JSONDecodeError:
             print("WARNING: settings.json has invalid JSON — starting fresh hooks section.")
 
-    notification_cmd, stop_cmd = build_commands(python, script)
-
     settings.setdefault("hooks", {})
+
+    # Show notification overlay — stays until dismissed
     settings["hooks"]["Notification"] = [
-        {"hooks": [{"type": "command", "command": notification_cmd}]}
+        {"hooks": [{"type": "command", "command": build_command(python, script, "notification")}]}
     ]
+    # Show completion overlay — auto-closes
     settings["hooks"]["Stop"] = [
-        {"hooks": [{"type": "command", "command": stop_cmd}]}
+        {"hooks": [{"type": "command", "command": build_command(python, script, "stop")}]}
+    ]
+    # Dismiss notification overlay when Claude finishes using a tool
+    # (fires after user accepts/denies a permission prompt)
+    settings["hooks"]["PostToolUse"] = [
+        {"hooks": [{"type": "command", "command": build_command(python, script, "dismiss")}]}
     ]
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     with open(settings_path, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2, ensure_ascii=False)
 
-    print("\nDone! Hooks installed successfully.")
-    print("Restart Claude Code (or run /hooks) to activate the mascot.")
+    print("\nDone! Hooks installed:")
+    print("  Notification -> show notification overlay (waits for user)")
+    print("  Stop         -> show completion overlay (auto-closes)")
+    print("  PostToolUse  -> dismiss notification overlay automatically")
+    print("\nRestart Claude Code (or run /hooks) to activate.")
 
 
 if __name__ == "__main__":
