@@ -1,6 +1,3 @@
-# GIFs are personal — bring your own
-gifs/*.gif
-gifs/*.png
 
 # Python
 __pycache__/
