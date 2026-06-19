@@ -3,14 +3,13 @@
 Claude Code Mascot - animated overlay triggered by Claude Code hooks.
 
 Shows a borderless, always-on-top window in the bottom-right corner with
-an animated GIF (or emoji fallback) that auto-closes after a few seconds.
+an animated GIF (or emoji fallback).
+
+- notification: stays visible (breathing pulse) until clicked or ESC
+- stop:         auto-closes after a few seconds
 
 Usage:
     python mascota.py <event> ["optional message"]
-
-Events:
-    notification  -> Claude needs permission / attention
-    stop          -> Claude finished the task
 """
 
 import os
@@ -57,6 +56,7 @@ EVENTOS = {
         "titulo": "Claude needs you",
         "mensaje": "May I continue?",
         "color": "#2563eb",
+        "auto_cerrar": False,   # stays until the user clicks or presses ESC
     },
     "stop": {
         "gif": os.path.join(SCRIPT_DIR, "gifs", "stop.gif"),
@@ -64,6 +64,7 @@ EVENTOS = {
         "titulo": "Done!",
         "mensaje": "Task finished",
         "color": "#16a34a",
+        "auto_cerrar": True,
     },
     "_default": {
         "gif": None,
@@ -71,12 +72,13 @@ EVENTOS = {
         "titulo": "Claude Code",
         "mensaje": "",
         "color": "#7c3aed",
+        "auto_cerrar": True,
     },
 }
 
 DURACION_MS = 3800
-FRAME_MS = 80
-MAX_LADO = 280
+FRAME_MS    = 80
+MAX_LADO    = 280
 
 
 def leer_payload():
@@ -107,6 +109,65 @@ def cargar_gif(path):
     return frames
 
 
+def _ciclo_alpha(root, cfg, on_tick=None):
+    """
+    State machine for window alpha:
+      'fade_in' -> 'pulse' (if auto_cerrar=False) or 'idle' -> 'fade_out'
+
+    Returns a cerrar() callable that triggers fade_out from any event
+    (click, ESC, or auto-close timer).
+    """
+    auto_cerrar = cfg.get("auto_cerrar", True)
+    estado = {"fase": "fade_in", "alpha": 0.0, "t": 0}
+
+    def cerrar(*_):
+        if estado["fase"] != "fade_out":
+            estado["fase"] = "fade_out"
+
+    def ciclo():
+        try:
+            fase = estado["fase"]
+
+            if fase == "fade_in":
+                estado["alpha"] = min(0.99, estado["alpha"] + 0.08)
+                root.attributes("-alpha", estado["alpha"])
+                if estado["alpha"] >= 0.99:
+                    estado["fase"] = "idle" if auto_cerrar else "pulse"
+
+            elif fase == "pulse":
+                # Breathing effect to signal the overlay is waiting for the user
+                estado["t"] += 1
+                a = 0.82 + 0.17 * math.sin(estado["t"] / 18.0)
+                root.attributes("-alpha", a)
+
+            elif fase == "idle":
+                pass  # fully visible, auto-close timer will call cerrar()
+
+            elif fase == "fade_out":
+                estado["alpha"] = float(root.attributes("-alpha"))
+                estado["alpha"] -= 0.08
+                if estado["alpha"] <= 0:
+                    root.destroy()
+                    return
+                root.attributes("-alpha", max(0.0, estado["alpha"]))
+
+            if on_tick:
+                on_tick(estado)
+
+            root.after(16, ciclo)
+        except tk.TclError:
+            pass
+
+    root.after(16, ciclo)
+
+    if auto_cerrar:
+        root.after(DURACION_MS, cerrar)
+        root.after(DURACION_MS + 1500,
+                   lambda: root.destroy() if root.winfo_exists() else None)
+
+    return cerrar
+
+
 def mostrar_gif(root, cfg):
     frames = cargar_gif(cfg["gif"]) if cfg.get("gif") else []
     if not frames:
@@ -119,45 +180,29 @@ def mostrar_gif(root, cfg):
 
     canvas = tk.Canvas(root, width=w, height=h, bg=BG_CANVAS, highlightthickness=0)
     canvas.pack()
-    canvas._frames = frames
+    canvas._frames = frames  # keep reference alive
     img_id = canvas.create_image(w // 2, h // 2, image=frames[0])
-    canvas.bind("<Button-1>", lambda e: root.destroy())
 
-    estado = {"frame": 0, "alpha": 0.0, "cerrando": False}
+    frame_idx = [0]
 
     def animar_frame():
-        estado["frame"] = (estado["frame"] + 1) % len(frames)
-        canvas.itemconfig(img_id, image=frames[estado["frame"]])
+        frame_idx[0] = (frame_idx[0] + 1) % len(frames)
+        canvas.itemconfig(img_id, image=frames[frame_idx[0]])
         try:
             root.after(FRAME_MS, animar_frame)
         except tk.TclError:
             pass
 
-    def fade():
-        if not estado["cerrando"] and estado["alpha"] < 0.99:
-            estado["alpha"] = min(0.99, estado["alpha"] + 0.08)
-            root.attributes("-alpha", estado["alpha"])
-        if estado["cerrando"]:
-            estado["alpha"] -= 0.07
-            if estado["alpha"] <= 0:
-                root.destroy()
-                return
-            root.attributes("-alpha", estado["alpha"])
-        try:
-            root.after(16, fade)
-        except tk.TclError:
-            pass
-
     root.after(FRAME_MS, animar_frame)
-    root.after(16, fade)
-    root.after(DURACION_MS, lambda: estado.__setitem__("cerrando", True))
-    root.after(DURACION_MS + 1500, root.destroy)
+
+    cerrar = _ciclo_alpha(root, cfg)
+    canvas.bind("<Button-1>", cerrar)
+    root.bind("<Escape>", cerrar)
     return True
 
 
 def mostrar_emoji(root, cfg, mensaje):
     ANCHO, ALTO = 300, 120
-    root.attributes("-alpha", 0.0)
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     x, y = sw - ANCHO - 24, sh - ALTO - OFFSET_Y
     root.geometry(f"{ANCHO}x{ALTO}+{x}+{y}")
@@ -167,13 +212,13 @@ def mostrar_emoji(root, cfg, mensaje):
 
     pad = 8
     canvas.create_rectangle(pad + 12, pad, ANCHO - pad - 12, ALTO - pad,
-                            fill=cfg["color"], outline="")
+                             fill=cfg["color"], outline="")
     canvas.create_rectangle(pad, pad + 12, ANCHO - pad, ALTO - pad - 12,
-                            fill=cfg["color"], outline="")
+                             fill=cfg["color"], outline="")
     for cx, cy in [(pad + 12, pad + 12), (ANCHO - pad - 12, pad + 12),
                    (pad + 12, ALTO - pad - 12), (ANCHO - pad - 12, ALTO - pad - 12)]:
         canvas.create_oval(cx - 12, cy - 12, cx + 12, cy + 12,
-                           fill=cfg["color"], outline="")
+                            fill=cfg["color"], outline="")
 
     base_y = ALTO // 2
     emoji_id = canvas.create_text(56, base_y, text=cfg["frames"][0], font=FUENTE_EMOJI)
@@ -181,32 +226,17 @@ def mostrar_emoji(root, cfg, mensaje):
                        fill="white", font=FUENTE_UI_BOLD)
     canvas.create_text(104, base_y + 12, text=mensaje, anchor="w",
                        fill="white", font=FUENTE_UI)
-    canvas.bind("<Button-1>", lambda e: root.destroy())
 
-    estado = {"t": 0, "alpha": 0.0, "cerrando": False}
+    t = [0]
 
-    def animar():
-        estado["t"] += 1
-        t = estado["t"]
-        canvas.coords(emoji_id, 56, base_y + math.sin(t / 6.0) * 8)
-        canvas.itemconfig(emoji_id, text=cfg["frames"][(t // 25) % len(cfg["frames"])])
-        if not estado["cerrando"] and estado["alpha"] < 0.97:
-            estado["alpha"] = min(0.97, estado["alpha"] + 0.08)
-            root.attributes("-alpha", estado["alpha"])
-        if estado["cerrando"]:
-            estado["alpha"] -= 0.07
-            if estado["alpha"] <= 0:
-                root.destroy()
-                return
-            root.attributes("-alpha", estado["alpha"])
-        try:
-            root.after(16, animar)
-        except tk.TclError:
-            pass
+    def on_tick(_estado):
+        t[0] += 1
+        canvas.coords(emoji_id, 56, base_y + math.sin(t[0] / 6.0) * 8)
+        canvas.itemconfig(emoji_id, text=cfg["frames"][(t[0] // 25) % len(cfg["frames"])])
 
-    root.after(16, animar)
-    root.after(DURACION_MS, lambda: estado.__setitem__("cerrando", True))
-    root.after(DURACION_MS + 1500, root.destroy)
+    cerrar = _ciclo_alpha(root, cfg, on_tick=on_tick)
+    canvas.bind("<Button-1>", cerrar)
+    root.bind("<Escape>", cerrar)
 
 
 def main():
