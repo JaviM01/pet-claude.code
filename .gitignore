@@ -1,0 +1,14 @@
+# GIFs are personal — bring your own
+gifs/*.gif
+gifs/*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
