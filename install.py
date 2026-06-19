@@ -13,7 +13,63 @@ import json
 import os
 import pathlib
 import platform
+import shutil
+import subprocess
 import sys
+
+
+def ensure_tkinter():
+    """Check tkinter is available; install it automatically if not."""
+    try:
+        import tkinter  # noqa: F401
+        return True
+    except ImportError:
+        pass
+
+    system = platform.system()
+    print("tkinter not found — attempting automatic installation...")
+
+    if system == "Darwin":
+        brew = shutil.which("brew")
+        if not brew:
+            print("ERROR: Homebrew not found. Install it from https://brew.sh, then run:")
+            py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+            print(f"  brew install python-tk@{py_ver}")
+            return False
+
+        py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+        pkg = f"python-tk@{py_ver}"
+        print(f"Running: brew install {pkg}")
+        result = subprocess.run([brew, "install", pkg])
+        if result.returncode != 0:
+            print(f"ERROR: brew install failed. Try manually: brew install {pkg}")
+            return False
+        print(f"[OK] {pkg} installed.")
+        return True
+
+    if system == "Linux":
+        if shutil.which("apt-get"):
+            print("Running: sudo apt-get install -y python3-tk")
+            result = subprocess.run(["sudo", "apt-get", "install", "-y", "python3-tk"])
+            if result.returncode == 0:
+                print("[OK] python3-tk installed.")
+                return True
+        elif shutil.which("dnf"):
+            print("Running: sudo dnf install -y python3-tkinter")
+            result = subprocess.run(["sudo", "dnf", "install", "-y", "python3-tkinter"])
+            if result.returncode == 0:
+                print("[OK] python3-tkinter installed.")
+                return True
+        print("ERROR: Could not install tkinter automatically.")
+        print("Install it manually for your distro (e.g. sudo apt install python3-tk).")
+        return False
+
+    if system == "Windows":
+        print("ERROR: tkinter not found. Reinstall Python from https://python.org")
+        print("and make sure 'tcl/tk and IDLE' is checked during setup.")
+        return False
+
+    return False
 
 
 def find_pythonw():
@@ -48,6 +104,9 @@ def main():
         print(f"ERROR: mascota.py not found at {script}")
         sys.exit(1)
 
+    if not ensure_tkinter():
+        sys.exit(1)
+
     python = find_pythonw()
     print(f"Python  : {python}")
     print(f"Script  : {script}")
@@ -63,16 +122,12 @@ def main():
 
     settings.setdefault("hooks", {})
 
-    # Show notification overlay — stays until dismissed
     settings["hooks"]["Notification"] = [
         {"hooks": [{"type": "command", "command": build_command(python, script, "notification")}]}
     ]
-    # Show completion overlay — auto-closes
     settings["hooks"]["Stop"] = [
         {"hooks": [{"type": "command", "command": build_command(python, script, "stop")}]}
     ]
-    # Dismiss notification overlay when Claude finishes using a tool
-    # (fires after user accepts/denies a permission prompt)
     settings["hooks"]["PostToolUse"] = [
         {"hooks": [{"type": "command", "command": build_command(python, script, "dismiss")}]}
     ]
@@ -87,19 +142,9 @@ def main():
     print("  PostToolUse  -> dismiss notification overlay automatically")
     print("\nRestart Claude Code (or run /hooks) to activate.")
 
-    system = platform.system()
-    if system == "Darwin":
-        print("\nmacOS notes:")
-        print("  - If the window doesn't appear, grant Accessibility permission to")
-        print("    Terminal (or your Claude Code app) in:")
-        print("    System Settings > Privacy & Security > Accessibility")
-        print("  - If tkinter is missing (Homebrew Python), run:")
-        print("    brew install python-tk")
-    elif system == "Linux":
-        print("\nLinux notes:")
-        print("  - If tkinter is missing, install it with:")
-        print("    sudo apt install python3-tk   # Debian/Ubuntu")
-        print("    sudo dnf install python3-tkinter  # Fedora")
+    if platform.system() == "Darwin":
+        print("\nmacOS note: if the window doesn't appear, grant Accessibility permission")
+        print("to Terminal in System Settings > Privacy & Security > Accessibility.")
 
 
 if __name__ == "__main__":
